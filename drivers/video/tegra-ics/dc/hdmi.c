@@ -49,10 +49,24 @@
 #include "edid.h"
 #include "nvhdcp.h"
 
+#if defined(CONFIG_MACH_SAMSUNG_P5) || defined(CONFIG_MACH_SAMSUNG_P5WIFI)
+#define __SAMSUNG_HDMI_FLAG_WORKAROUND__
+#endif
+
 /* datasheet claims this will always be 216MHz */
 #define HDMI_AUDIOCLK_FREQ		216000000
 
 #define HDMI_REKEY_DEFAULT		56
+
+#ifdef  __SAMSUNG_HDMI_FLAG_WORKAROUND__
+static int hdmi_enable_flag = -1;
+spinlock_t hdmi_enable_lock;
+
+enum {
+        HDMI_FLAG_DISABLE = 0,
+        HDMI_FLAG_ENABLE = 1,
+}EN_HDMI_FLAG;
+#endif
 
 #define HDMI_ELD_RESERVED1_INDEX		1
 #define HDMI_ELD_RESERVED2_INDEX		3
@@ -664,6 +678,33 @@ static inline void tegra_dc_hdmi_debug_create(struct tegra_dc_hdmi_data *hdmi)
 
 #define PIXCLOCK_TOLERANCE	200
 
+#ifdef  __SAMSUNG_HDMI_FLAG_WORKAROUND__
+
+int tegra_dc_get_hdmi_flag()
+{
+        int temp;
+        unsigned long flags;
+
+        spin_lock_irqsave(&hdmi_enable_lock, flags);
+        temp = hdmi_enable_flag;
+        spin_unlock_irqrestore(&hdmi_enable_lock, flags);
+        return temp;
+}
+EXPORT_SYMBOL(tegra_dc_get_hdmi_flag);
+
+void tegra_dc_set_hdmi_flag(int flag)
+{
+        unsigned long flags;
+
+        spin_lock_irqsave(&hdmi_enable_lock, flags);
+        hdmi_enable_flag = flag;
+        spin_unlock_irqrestore(&hdmi_enable_lock, flags);
+
+        printk(KERN_INFO        "[HDMI] %s() flag=%d\n", __func__, flag);
+}
+EXPORT_SYMBOL(tegra_dc_set_hdmi_flag);
+#endif
+
 static int tegra_dc_calc_clock_per_frame(const struct fb_videomode *mode)
 {
 	return (mode->left_margin + mode->xres +
@@ -737,8 +778,17 @@ static bool tegra_dc_hdmi_hpd(struct tegra_dc *dc)
 	int sense;
 	int level;
 
+#ifdef  __SAMSUNG_HDMI_FLAG_WORKAROUND__
+        if( tegra_dc_get_hdmi_flag() == HDMI_FLAG_DISABLE ) {
+//                printk(KERN_INFO        "[HDMI] %s()->%s() hdmi_enable_flag is HDMI_FLAG_DISABLE\n", call_func_name, __func__);
+                level = 0;
+        } else {
+//                printk(KERN_INFO        "[HDMI] %s()->%s() hdmi_enable_flag is HDMI_FLAG_ENABLE\n", call_func_name, __func__);
+                level = gpio_get_value(dc->out->hotplug_gpio);
+        }
+#else
 	level = gpio_get_value(dc->out->hotplug_gpio);
-
+#endif
 	sense = dc->out->flags & TEGRA_DC_OUT_HOTPLUG_MASK;
 
 	return (sense == TEGRA_DC_OUT_HOTPLUG_HIGH && level) ||
@@ -942,6 +992,10 @@ static int tegra_dc_hdmi_init(struct tegra_dc *dc)
 	struct clk *disp1_clk = NULL;
 	struct clk *disp2_clk = NULL;
 	int err;
+
+#ifdef  __SAMSUNG_HDMI_FLAG_WORKAROUND__
+        spin_lock_init(&hdmi_enable_lock);
+#endif
 
 	hdmi = kzalloc(sizeof(*hdmi), GFP_KERNEL);
 	if (!hdmi)

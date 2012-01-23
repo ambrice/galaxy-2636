@@ -138,6 +138,9 @@ static struct wacom_g5_callbacks *wacom_callbacks;
 /*static unsigned int *sec_batt_level;*/
 static struct board_usb_data usb_data;
 
+/* to indicate REBOOT_MODE_RECOVERY */
+extern int reboot_mode;
+
 /*Check ADC value to select headset type*/
 extern s16 adc_get_value(u8 channel);
 extern s16 stmpe811_adc_get_value(u8 channel);
@@ -170,6 +173,9 @@ static int write_bootloader_message(char *cmd, int mode)
 	mm_segment_t oldfs;
 	int ret = 0;
 	loff_t pos = 2048L;  /* bootloader message offset in MISC.*/
+#ifdef CONFIG_KERNEL_DEBUG_SEC
+	int state;
+#endif
 
 	struct bootloader_message  bootmsg;
 
@@ -178,7 +184,10 @@ static int write_bootloader_message(char *cmd, int mode)
 	if (mode == REBOOT_MODE_RECOVERY) {
 		strcpy(bootmsg.command, "boot-recovery");
 #ifdef CONFIG_KERNEL_DEBUG_SEC
+		reboot_mode = REBOOT_MODE_RECOVERY;
 		kernel_sec_set_debug_level(KERNEL_SEC_DEBUG_LEVEL_LOW);
+		state = 1;	/* Set USB path to AP */
+		sec_set_param(param_index_usbsel, &state);
 #endif
 	}
 	else if (mode == REBOOT_MODE_FASTBOOT)
@@ -465,6 +474,7 @@ static __initdata struct tegra_clk_init_table p3_clk_init_table[] = {
 	{ "pll_c",	"clk_m",	560000000,	true},
 	{ "pll_a",	NULL,		11289600,	true},
 	{ "pll_a_out0",	NULL,		11289600,	true},
+	{ "clk_dev1",   "pll_a_out0",   0,              true},
 	{ "i2s1",	"pll_a_out0",	11289600,	true},
 	{ "i2s2",	"pll_a_out0",	11289600,	true},
 	{ "audio",	"pll_a_out0",	11289600,	true},
@@ -567,6 +577,11 @@ static char *usb_functions_mtp_acm[] = {
 /* debug mode : using MS Composite*/
 static char *usb_functions_ums_acm_adb[] = {
 	"usb_mass_storage",
+	"acm",
+	"adb",
+};
+static char *usb_functions_mtp_acm_adb[] = {
+	"mtp",
 	"acm",
 	"adb",
 };
@@ -690,8 +705,8 @@ static struct android_usb_product usb_products[] = {
 #    else /* Not used KIES_UMS */
 	{
 		.product_id	= SAMSUNG_DEBUG_PRODUCT_ID,
-		.num_functions	= ARRAY_SIZE(usb_functions_ums_acm_adb),
-		.functions	= usb_functions_ums_acm_adb,
+		.num_functions	= ARRAY_SIZE(usb_functions_mtp_acm_adb),
+		.functions	= usb_functions_mtp_acm_adb,
 		.bDeviceClass	= 0xEF,
 		.bDeviceSubClass= 0x02,
 		.bDeviceProtocol= 0x01,
@@ -942,8 +957,6 @@ void __init s3c_usb_set_serial(void)
 
 static void sec_jack_set_micbias_state(bool on)
 {
-	printk(KERN_DEBUG
-		"Board P5 : Enterring sec_jack_set_micbias_state = %d\n", on);
 	gpio_set_value(GPIO_EAR_MICBIAS_EN, on);
 }
 
@@ -986,7 +999,8 @@ static const struct tegra_pingroup_config i2c2_gen2 = {
 static struct tegra_i2c_platform_data p3_i2c2_platform_data = {
 	.adapter_nr	= 1,
 	.bus_count	= 2,
-	.bus_clk_rate	= { 400000, 0 },
+	.bus_clk_rate	= { 400000, 0  },
+// MR2 from nVidia	.bus_clk_rate	= { 100000, 10000 },
 	.bus_mux	= { &i2c2_ddc, &i2c2_gen2 },
 	.bus_mux_len	= { 1, 1 },
 	.slave_addr = 0x00FC,
@@ -1040,31 +1054,35 @@ static struct tegra_audio_platform_data tegra_audio_pdata[] = {
 };
 
 static struct tegra_das_platform_data tegra_das_pdata = {
+	.dap_clk = "clk_dev1",
 	.tegra_dap_port_info_table = {
-		[0] = {
-			.dac_port = tegra_das_port_none,
-			.codec_type = tegra_audio_codec_type_none,
-			.device_property = {
-				.num_channels = 0,
-				.bits_per_sample = 0,
-				.rate = 0,
-				.dac_dap_data_comm_format = 0,
-			},
-		},
 		/* I2S1 <--> DAC1 <--> DAP1 <--> Hifi Codec */
-		[1] = {
+		[0] = {
 			.dac_port = tegra_das_port_i2s1,
+			.dap_port = tegra_das_port_dap1,
 			.codec_type = tegra_audio_codec_type_hifi,
 			.device_property = {
 				.num_channels = 2,
 				.bits_per_sample = 16,
 				.rate = 44100,
 				.dac_dap_data_comm_format =
-					dac_dap_data_format_i2s,
+						dac_dap_data_format_all,
+			},
+		},
+		[1] = {
+			.dac_port = tegra_das_port_none,
+			.dap_port = tegra_das_port_none,
+			.codec_type = tegra_audio_codec_type_none,
+			.device_property = {
+				.num_channels = 0,
+				.bits_per_sample = 0,
+				.rate = 0,
+				.dac_dap_data_comm_format = 0,
 			},
 		},
 		[2] = {
 			.dac_port = tegra_das_port_none,
+			.dap_port = tegra_das_port_none,
 			.codec_type = tegra_audio_codec_type_none,
 			.device_property = {
 				.num_channels = 0,
@@ -1073,18 +1091,22 @@ static struct tegra_das_platform_data tegra_das_pdata = {
 				.dac_dap_data_comm_format = 0,
 			},
 		},
+		/* I2S2 <--> DAC2 <--> DAP4 <--> BT SCO Codec */
 		[3] = {
-			.dac_port = tegra_das_port_none,
-			.codec_type = tegra_audio_codec_type_none,
+			.dac_port = tegra_das_port_i2s2,
+			.dap_port = tegra_das_port_dap4,
+			.codec_type = tegra_audio_codec_type_bluetooth,
 			.device_property = {
-				.num_channels = 0,
-				.bits_per_sample = 0,
-				.rate = 0,
-				.dac_dap_data_comm_format = 0,
+				.num_channels = 1,
+				.bits_per_sample = 16,
+				.rate = 8000,
+				.dac_dap_data_comm_format =
+					dac_dap_data_format_dsp,
 			},
 		},
 		[4] = {
 			.dac_port = tegra_das_port_none,
+			.dap_port = tegra_das_port_none,
 			.codec_type = tegra_audio_codec_type_none,
 			.device_property = {
 				.num_channels = 0,
@@ -1098,12 +1120,20 @@ static struct tegra_das_platform_data tegra_das_pdata = {
 	.tegra_das_con_table = {
 		[0] = {
 			.con_id = tegra_das_port_con_id_hifi,
-			.num_entries = 4,
+			.num_entries = 2,
 			.con_line = {
 				[0] = {tegra_das_port_i2s1, tegra_das_port_dap1, true},
 				[1] = {tegra_das_port_dap1, tegra_das_port_i2s1, false},
-				[2] = {tegra_das_port_i2s2, tegra_das_port_dap4, true},
-				[3] = {tegra_das_port_dap4, tegra_das_port_i2s2, false},
+			},
+		},
+		[1] = {
+			.con_id = tegra_das_port_con_id_bt_codec,
+			.num_entries = 4,
+			.con_line = {
+				[0] = {tegra_das_port_i2s2, tegra_das_port_dap4, true},
+				[1] = {tegra_das_port_dap4, tegra_das_port_i2s2, false},
+				[2] = {tegra_das_port_i2s1, tegra_das_port_dap1, true},
+				[3] = {tegra_das_port_dap1, tegra_das_port_i2s1, false},
 			},
 		},
 	}
@@ -1534,9 +1564,43 @@ static struct uart_platform_data uart_pdata {
 };
 
 #else
+static int dock_wakeup(void)
+{
+	unsigned long status =
+		readl(IO_ADDRESS(TEGRA_PMC_BASE) + PMC_WAKE_STATUS);
+
+	if (status & TEGRA_WAKE_GPIO_PI5) {
+		writel(TEGRA_WAKE_GPIO_PI5,
+			IO_ADDRESS(TEGRA_PMC_BASE) + PMC_WAKE_STATUS);
+	}
+
+	return status & TEGRA_WAKE_GPIO_PI5 ? KEY_WAKEUP : KEY_RESERVED;
+}
+
+#if defined(CONFIG_MACH_SAMSUNG_P5WIFI)
+void disable_wifi_uart(bool en)
+{
+	static bool enable = false;
+
+	if (!enable) {
+		gpio_request(GPIO_IPC_TXD, "GPIO_IPC_TXD");
+		gpio_direction_output(GPIO_IPC_TXD, 0);
+		tegra_gpio_enable(GPIO_IPC_TXD);
+		enable = true;
+	} else {
+		tegra_gpio_disable(GPIO_IPC_TXD);
+		gpio_free(GPIO_IPC_TXD);
+		enable = false;
+	}
+}
+#endif
 
 static struct dock_keyboard_platform_data kbd_pdata = {
 	.acc_power = tegra_acc_power,
+	.wakeup_key = dock_wakeup,
+#if defined(CONFIG_MACH_SAMSUNG_P5WIFI)
+	.disable_wifi_uart = disable_wifi_uart,
+#endif
 	.accessory_irq_gpio = GPIO_ACCESSORY_INT,
 };
 
@@ -1624,8 +1688,6 @@ static int sec_jack_get_adc_value(void)
 {
 	s16 ret;
 	ret = stmpe811_adc_get_value(4);
-	printk(KERN_DEBUG
-		"Board P3 : Enterring sec_jack_get_adc_value = %d\n", ret);
 	return  ret;
 }
 
@@ -1674,8 +1736,15 @@ static struct platform_device *uart_wifi_devices[] __initdata = {
 };
 #endif
 
+
+static struct platform_device watchdog_device = {
+       .name = "watchdog",
+       .id = -1,
+};
+
+
 static struct platform_device *p3_devices[] __initdata = {
-	&androidusb_device,
+       &watchdog_device,
 #ifdef CONFIG_USB_ANDROID_RNDIS
 	&s3c_device_rndis,
 #else
@@ -1685,7 +1754,6 @@ static struct platform_device *p3_devices[] __initdata = {
 	&tegra_uarta_device,
 	&tegra_btuart_device,
 	&pmu_device,
-	&tegra_udc_device,
 	&tegra_gart_device,
 	&tegra_aes_device,
 	&p3_keys_device,
@@ -2110,6 +2178,7 @@ static struct tegra_ehci_platform_data tegra_ehci_pdata[] = {
 		.phy_config = &hsic_phy_config,
 		.operating_mode = TEGRA_USB_HOST,
 		.power_down_on_bus_suspend = 1,
+		.phy_type = TEGRA_USB_PHY_TYPE_LINK_ULPI,
 	},
 	[2] = {
 		.phy_config = &utmi_phy_config[1],
@@ -2313,19 +2382,13 @@ static void p3_usb_init(void)
   	val |= PREFETCH_ENB | USB3_MST_ID | ADDR_BNDRY(0xc) | INACTIVITY_TIMEOUT(0x1000);
   	gizmo_writel(val, AHB_MEM_PREFETCH_CFG3);
 
+	/* OTG should be the first to be registered */
 	tegra_otg_device.dev.platform_data = &tegra_otg_pdata;
 	platform_device_register(&tegra_otg_device);
-#if defined(CONFIG_SEC_MODEM)
-#ifdef CONFIG_SAMSUNG_LPM_MODE
-	if (!charging_mode_from_boot) {
-		tegra_ehci2_device.dev.platform_data = &tegra_ehci_pdata[1];
-		platform_device_register(&tegra_ehci2_device);
-	}
-#else
-	tegra_ehci2_device.dev.platform_data = &tegra_ehci_pdata[1];
-	platform_device_register(&tegra_ehci2_device);
-#endif
-#endif
+
+	platform_device_register(&androidusb_device);
+	platform_device_register(&tegra_udc_device);
+
 #if 0 /*USB team must verify*/
 	/* create a fake MAC address from our serial number.
 	 * first byte is 0x02 to signify locally administered.
@@ -2338,6 +2401,26 @@ static void p3_usb_init(void)
 	}
 #endif
 }
+
+#if defined(CONFIG_SEC_MODEM)
+static int __init p3_hsic_init(void)
+{
+#ifdef CONFIG_SAMSUNG_LPM_MODE
+	int ret = 0;
+	if (!charging_mode_from_boot) {
+		register_smd_resource();
+		tegra_ehci2_device.dev.platform_data = &tegra_ehci_pdata[1];
+		ret = platform_device_register(&tegra_ehci2_device);
+	}
+	return ret;
+#else
+	register_smd_resource();
+	tegra_ehci2_device.dev.platform_data = &tegra_ehci_pdata[1];
+	return platform_device_register(&tegra_ehci2_device);
+#endif
+}
+late_initcall(p3_hsic_init);
+#endif
 
 static void p3_wlan_gpio_config(void)
 {
@@ -2388,6 +2471,26 @@ void p3_wlan_gpio_disable(void)
 }
 EXPORT_SYMBOL(p3_wlan_gpio_disable);
 
+void p3_wlan_reset_enable(void)
+{
+	printk(KERN_DEBUG "wlan reset enable OK\n");
+	gpio_set_value(GPIO_WLAN_EN, 1);
+	mdelay(100);
+	printk(KERN_DEBUG "wlan get value  (%d)\n",
+	gpio_get_value(GPIO_WLAN_EN));
+}
+EXPORT_SYMBOL(p3_wlan_reset_enable);
+
+void p3_wlan_reset_disable(void)
+{
+	printk(KERN_DEBUG "wlan reset disable OK\n");
+	gpio_set_value(GPIO_WLAN_EN, 0);
+	mdelay(100);
+	printk(KERN_DEBUG "wlan get value  (%d)\n",
+	gpio_get_value(GPIO_WLAN_EN));
+
+}
+EXPORT_SYMBOL(p3_wlan_reset_disable);
 
 int	is_JIG_ON_high()
 {
@@ -2829,14 +2932,6 @@ static void __init tegra_p3_init(void)
 #endif
 
 	p3_keys_init();
-#if defined(CONFIG_SEC_MODEM)
-#ifdef CONFIG_SAMSUNG_LPM_MODE
-	if (!charging_mode_from_boot)
-		register_smd_resource();
-#else
-	register_smd_resource();
-#endif
-#endif
 	p3_usb_init();
 	p3_gps_init();
 	p3_panel_init();

@@ -45,6 +45,7 @@
 #define TSP_FACTORY_TEST
 #define ENABLE_NOISE_TEST_MODE
 
+#if !defined(CONFIG_ICS)
 #define REPORT_MT(touch_number, x, y, amplitude) \
 do {     \
 	input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, touch_number);\
@@ -54,6 +55,18 @@ do {     \
 	input_report_abs(ts->input_dev, ABS_MT_WIDTH_MAJOR, amplitude); \
 	input_mt_sync(ts->input_dev);                                      \
 } while (0)
+#else
+#define REPORT_MT(touch_number, x, y, amplitude, key) \
+do {     \
+	input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, touch_number);\
+	input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);             \
+	input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);             \
+	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, amplitude);         \
+	input_report_abs(ts->input_dev, ABS_MT_PRESSURE, amplitude); \
+	input_report_key(ts->input_dev, BTN_TOUCH, key); \
+	input_mt_sync(ts->input_dev);                                       \
+ } while (0)
+#endif
 
 #ifdef SET_DOWNLOAD_BY_GPIO
 #include "mcs8000_download.h"
@@ -68,7 +81,6 @@ struct melfas_ts_data {
 	struct tsp_callbacks callbacks;
 	uint32_t flags;
 	bool charging_status;
-	bool tsp_status;
 #ifdef SET_DOWNLOAD_BY_GPIO
 	int gpio_scl;
 	int gpio_sda;
@@ -172,13 +184,9 @@ static void key_handler(struct melfas_ts_data *ts, char key_val)
 	case 'M':
 	case 'm':
 		write_buf[0] = ADDR_CHANGE_PROTOCOL;
-		write_buf[1] = 7;//PTC_STSI_1_0_0;
+		write_buf[1] = PTC_STSI_1_0_0;
 		debug_i2c_write(ts->client, write_buf, 2);
 		debug_on = false;
-		msleep(200);
-		ts->power_enable(0);
-		msleep(200);
-		ts->power_enable(1);
 		break;
 	case 'R':
 	case 'r':
@@ -616,10 +624,8 @@ static int melfas_i2c_write(struct i2c_client *client, char *buf, int length)
 
 	if (i == length)
 		return length;
-	else{
-		pr_err("[TSP] melfas_i2c_write error : [%d]",i);
+	else
 		return -EIO;
-	}
 }
 
 static void release_all_fingers(struct melfas_ts_data *ts)
@@ -634,8 +640,13 @@ static void release_all_fingers(struct melfas_ts_data *ts)
 
 		g_Mtouch_info[i].strength = 0;
 
-		REPORT_MT(i, g_Mtouch_info[i].posX,
-				g_Mtouch_info[i].posY, g_Mtouch_info[i].strength);
+		REPORT_MT(i,
+				g_Mtouch_info[i].posX, g_Mtouch_info[i].posY,
+#if !defined(CONFIG_ICS)
+				g_Mtouch_info[i].strength);
+#else
+				g_Mtouch_info[i].strength, g_Mtouch_info[i].strength ? 1 : 0);
+#endif
 
 		g_Mtouch_info[i].posX = 0;
 		g_Mtouch_info[i].posY = 0;
@@ -643,26 +654,6 @@ static void release_all_fingers(struct melfas_ts_data *ts)
 		if(0 == g_Mtouch_info[i].strength)
 			g_Mtouch_info[i].strength = -1;
 	}
-	input_sync(ts->input_dev);
-}
-
-static void reset_tsp(struct melfas_ts_data *ts)
-{
-	int		ret = 0;
-	char	buf[2];
-	
-	buf[0] = 0x60;
-	buf[1] = ts->charging_status;
-	
-	release_all_fingers(ts);
-	
-	ts->power_enable(0);
-	msleep(700);
-	ts->power_enable(1);
-	msleep(500);
-
-	pr_info("[TSP] TSP reset & TA/USB %sconnect\n",ts->charging_status?"":"dis");
-	melfas_i2c_write(ts->client, (char *)buf, 2);
 }
 
 static int read_input_info(struct melfas_ts_data *ts, u8 *val)
@@ -707,52 +698,18 @@ static int firmware_update(struct melfas_ts_data *ts)
 	u8 	fw_ver = 0;
 	int ret = 0;
 	int ret_slv = 0;
-	bool empty_chip = true;
-	INT8 dl_enable_bit = 0x00;
-	u8 version_info = 0;
+	bool empty_chip = false;
 
 #if !MELFAS_ISP_DOWNLOAD
 	ret = check_firmware_master(ts, &val);
 	ret_slv = check_firmware_slave(ts, &val_slv);
 
-	for(i=0 ; i <5 ; i++)
-	{
-		if (ret || ret_slv) {
-			pr_err("[TSP] ISC mode : Failed to check firmware version(ISP) : %d , %d : %0x0 , %0x0 \n",ret, ret_slv,val,val_slv);
-			ret = check_firmware_master(ts, &val);
-			ret_slv = check_firmware_slave(ts, &val_slv);			
-		}else{
-			empty_chip = false;
-			break;
-		}
-	}
-
-	if(MELFAS_CORE_FIRWMARE_UPDATE_ENABLE) 
-	{
-		check_firmware_core(ts,&version_info);
-//		printk("<TSP> CORE_VERSION : 0x%2X\n",version_info);
-		if(version_info < CORE_FW_VER || version_info==0xFF)
-			dl_enable_bit |= 0x01;
-	}
-	if(MELFAS_PRIVATE_CONFIGURATION_UPDATE_ENABLE)
-	{
-		check_firmware_private(ts,&version_info);
-//		printk("<TSP> PRIVATE_CUSTOM_VERSION : 0x%2X\n",version_info);
-		if(version_info < PRIVATE_FW_VER || version_info==0xFF)
-			dl_enable_bit |= 0x02;
-	}
-	if(MELFAS_PUBLIC_CONFIGURATION_UPDATE_ENABLE)
-	{
-		check_firmware_public(ts,&version_info);
-//		printk("<TSP> PUBLIC_CUSTOM_VERSION : 0x%2X\n",version_info);
-		if(version_info < PUBLIC_FW_VER || version_info==0xFF
-			|| (ts->touch_id == 0 && (val < MELFAS_FW_VER || val > 0x50 ))
-			|| (ts->touch_id == 1 && val < ILJIN_FW_VER ))
-			dl_enable_bit |= 0x04;
-	}
-	pr_info("dl_enable_bit  = [0x%X],%s pennel",dl_enable_bit, ts->touch_id ? "ILJIN" : "MELFAS" );
-//	dl_enable_bit = 0x07;
+	msleep(100);
 	
+	if (ret || ret_slv) {
+		empty_chip = true;
+		pr_err("[TSP] ISC mode : Failed to check firmware version(ISP) : %d , %d : %0x0 , %0x0 \n",ret, ret_slv,val,val_slv);
+	}
 #endif
 
 #ifdef SET_DOWNLOAD_BY_GPIO
@@ -766,6 +723,7 @@ static int firmware_update(struct melfas_ts_data *ts)
 	gpio_request(ts->gpio_scl, "TSP_SCL");
 
 
+#ifndef FW_FROM_FILE
 #if MELFAS_ISP_DOWNLOAD
 	ret = mcsdl_download_binary_data(ts->touch_id);
 	if (ret)
@@ -773,24 +731,35 @@ static int firmware_update(struct melfas_ts_data *ts)
 #else
 
 	/* (current version  < binary verion) */
-	if (empty_chip || val != val_slv
-			|| val < MELFAS_BASE_FW_VER
-			|| (val > 0x50  && val < ILJIN_BASE_FW_VER) )
-	{
-		pr_info("[TSP] ISC mode enter but ISP mode download start : 0x%X, 0x%X\n",val,val_slv);
-		mcsdl_download_binary_data(ts->touch_id); 	//ISP mode download
+	if (empty_chip || (ts->touch_id == 1 && val < ILJIN_BASE_FW_VER  )
+			|| (ts->touch_id == 0 && (val < MELFAS_BASE_FW_VER  || val > 0x50))){
+		pr_info("[TSP] ISC mode enter and Under Base F/W Version : 0x%X\n",val);
+		mcsdl_download_binary_data(ts->touch_id); 	//ISP mode download ( CORE + PRIVATE )
 	}
-	else
+
+	ret = mms100_ISC_download_binary_data(ts->touch_id);
+	if (ret)
 	{
-		ret = mms100_ISC_download_binary_data(ts->touch_id, dl_enable_bit);
-		if (ret)
+		pr_err("[TSP] SET Download ISC Fail - error code [%d]\n", ret);
+		for(i=0; i<3 ; i++)
 		{
-			pr_err("[TSP] SET Download ISC Fail - error code [%d]\n", ret);
-			ret = mcsdl_download_binary_data(ts->touch_id); 	//ISP mode download 
+			if(ret)
+				ret = mcsdl_download_binary_data(ts->touch_id); 	//ISP mode download ( CORE + PRIVATE )
+			if(!ret && MELFAS_PUBLIC_CONFIGURATION_UPDATE_ENABLE)
+				ret = mms100_ISC_download_binary_data(ts->touch_id);
 			if (ret)
-				pr_err("[TSP] SET Download ISC & ISP ALL Fail - error code [%d]\n", ret);
+				pr_err("[TSP] SET Download ISC & ISP Fail - error code [%d]\n", ret);
+			else
+				break;
 		}
 	}
+#endif
+
+#else
+	ret = mcsdl_download_binary_data(ts->touch_id);
+	if (ret)
+		pr_err("[TSP] SET Download From File is Fail - error code [%d]\n", ret);
+
 #endif
 
 	gpio_free(ts->gpio_sda);
@@ -826,11 +795,8 @@ static void inform_charger_connection(struct tsp_callbacks *cb, int mode)
 	buf[0] = 0x60;
 	buf[1] = !!mode;
 	ts->charging_status = !!mode;
-
-	if(ts->tsp_status){
-		pr_info("[TSP] TA/USB is %sconnected\n", !!mode ? "" : "dis");
-		melfas_i2c_write(ts->client, (char *)buf, 2);
-	}
+	pr_info("[TSP] TA/USB is %sconnected\n", !!mode ? "" : "dis");
+	melfas_i2c_write(ts->client, (char *)buf, 2);
 }
 
 static void melfas_ts_read_input(struct melfas_ts_data *ts)
@@ -855,7 +821,12 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 
 		if(i == P5_MAX_I2C_FAIL){	// ESD Detection - I2c Fail
 			pr_err("[TSP] Melfas_ESD I2C FAIL \n");
-			reset_tsp(ts);
+
+			release_all_fingers(ts);
+			ts->power_enable(0);
+
+			msleep(700);
+			ts->power_enable(1);
 		}
 
 		return ;
@@ -878,27 +849,23 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 #endif
 		keyID = strength = buf[4];
 
-		if(reportID == 0x0F) { // ESD Detection
+		if(reportID == 0x0f ) { // ESD Detection
 			pr_info("[TSP] MELFAS_ESD Detection");
-			reset_tsp(ts);
+
+			release_all_fingers(ts);
+			ts->power_enable(0);
+
+			msleep(700);
+			ts->power_enable(1);
 			return ;
 		}
-		else if(reportID == 0x0E)// abnormal Touch Detection
+/*		else if(reportID == 0x0E)// Plam
 		{
-			pr_info("[TSP] MELFAS abnormal Touch Detection");
-			reset_tsp(ts);
+			pr_info("[TSP] MELFAS_Plam");
+			release_all_fingers(ts);
 			return ;
 		}
-		else if(reportID == 0x0D)// 	clear reference
-		{
-			pr_info("[TSP] MELFAS Clear Reference Detection");
-			return ;
-		}
-		else if(reportID == 0x0C)//Impulse Noise TA
-		{
-			pr_info("[TSP] MELFAS Impulse Noise TA Detection");
-			return ;
-		}
+*/
 
 		touchID = reportID-1;
 
@@ -916,29 +883,22 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 			g_Mtouch_info[touchID].posY= posY;
 
 			if(touchState) {
-#if 0//def CONFIG_KERNEL_DEBUG_SEC
+#ifdef CONFIG_KERNEL_DEBUG_SEC
 				if (0 >= g_Mtouch_info[touchID].strength)
 					pr_info("[TSP] Press    - ID : %d  [%d,%d] WIDTH : %d",
 						touchID,
 						g_Mtouch_info[touchID].posX,
 						g_Mtouch_info[touchID].posY,
 						strength);
-#else
-				if (0 >= g_Mtouch_info[touchID].strength)
-					pr_info("[TSP] P : %d\n", touchID);
 #endif
-				g_Mtouch_info[touchID].strength= (strength+1)/2;
+				g_Mtouch_info[touchID].strength= strength/2;
 			} else {
-#if 0//def CONFIG_KERNEL_DEBUG_SEC
+#ifdef CONFIG_KERNEL_DEBUG_SEC
 				if (g_Mtouch_info[touchID].strength)
 					pr_info("[TSP] Release - ID : %d [%d,%d]",
 						touchID,
 						g_Mtouch_info[touchID].posX,
 						g_Mtouch_info[touchID].posY);
-#else
-				if (g_Mtouch_info[touchID].strength)
-					pr_info("[TSP] R : %d\n", touchID);
-
 #endif
 				g_Mtouch_info[touchID].strength = 0;
 			}
@@ -947,8 +907,14 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 				if(g_Mtouch_info[i].strength== -1)
 					continue;
 
-				REPORT_MT(i, g_Mtouch_info[i].posX,
-						g_Mtouch_info[i].posY, g_Mtouch_info[i].strength);
+				REPORT_MT(i,
+						g_Mtouch_info[i].posX, g_Mtouch_info[i].posY,
+#if !defined(CONFIG_ICS)
+						g_Mtouch_info[i].strength);
+#else
+						g_Mtouch_info[i].strength,
+						g_Mtouch_info[i].strength ? 1 : 0);
+#endif
 
 				if (debug_print)
 					pr_info("[TSP] Touch ID: %d, State : %d, x: %d, y: %d, z: %d\n",
@@ -999,37 +965,7 @@ static ssize_t store_firmware(struct device *dev,
 	if (sscanf(buf, "%d", &i) != 1)
 		return -EINVAL;
 
-#ifdef SET_DOWNLOAD_BY_GPIO
-	disable_irq(ts->client->irq);
-	/* enable gpio */
-#ifdef CONFIG_ARCH_TEGRA
-	tegra_gpio_enable(ts->gpio_sda);
-	tegra_gpio_enable(ts->gpio_scl);
-#endif
-	gpio_request(ts->gpio_sda, "TSP_SDA");
-	gpio_request(ts->gpio_scl, "TSP_SCL");
-	
-
-	mcsdl_download_binary_file();
-
-	gpio_free(ts->gpio_sda);
-	gpio_free(ts->gpio_scl);
-
-	/* disable gpio */
-#ifdef CONFIG_ARCH_TEGRA
-	tegra_gpio_disable(ts->gpio_sda);
-	tegra_gpio_disable(ts->gpio_scl);
-#endif
-#endif /* SET_DOWNLOAD_BY_GPIO */
-
-	msleep(100);
-	/* reset chip */
-	ts->power_enable(0);
-	msleep(200);
-	ts->power_enable(1);
-	msleep(100);
-
-	enable_irq(ts->client->irq);
+	firmware_update(ts);
 
 	return count;
 }
@@ -1046,49 +982,6 @@ static ssize_t show_firmware_bin(struct device *dev,
 	else
 		return snprintf(buf, PAGE_SIZE,	"ILJ_%Xx%d\n",
 					ILJIN_FW_VER, 0x0);
-}
-static ssize_t show_firmware_bin_slv(struct device *dev,
-						struct device_attribute *attr,
-						char *buf)
-{
-	struct melfas_ts_data *ts = dev_get_drvdata(dev);
-	u8 val_slv = 0;
-	int ret_slv = 0;
-	ret_slv = check_firmware_slave(ts, &val_slv);
-	if (ret_slv) {
-		pr_err("[TSP] Failed to check firmware slave version : %d \n",ret_slv);
-	}
-	if (!ts->touch_id)
-		return snprintf(buf, PAGE_SIZE,	"MEL_%Xx%d\n",
-					val_slv, 0x0);
-	else
-		return snprintf(buf, PAGE_SIZE,	"ILJ_%Xx%d\n",
-					val_slv, 0x0);
-}
-static ssize_t show_firmware_bin_detail(struct device *dev,
-						struct device_attribute *attr,
-						char *buf)
-{
-	struct melfas_ts_data *ts = dev_get_drvdata(dev);
-
-	u8 	val_core 	= 0;
-	u8 	val_private = 0;
-	u8 	val_public 	= 0;
-	int ret_core 	= 0;
-	int ret_private = 0;
-	int ret_public 	= 0;
-
-	ret_core 	= check_firmware_core(ts, &val_core);
-	ret_private = check_firmware_private(ts, &val_private);
-	ret_public 	= check_firmware_public(ts, &val_public);
-
-
-	if (!ts->touch_id)
-		return snprintf(buf, PAGE_SIZE,	"MEL_%Xx%Xx%X\n",
-					val_core, val_private, val_public);
-	else
-		return snprintf(buf, PAGE_SIZE,	"ILJ_%Xx%Xx%X\n",
-					val_core, val_private, val_public);
 }
 
 static ssize_t store_debug_mode(struct device *dev,
@@ -1145,8 +1038,6 @@ static ssize_t show_threshold(struct device *dev,
 
 static DEVICE_ATTR(fw_dev, S_IWUSR|S_IRUGO, show_firmware_dev, store_firmware);
 static DEVICE_ATTR(fw_bin, S_IRUGO, show_firmware_bin, NULL);
-static DEVICE_ATTR(fw_bin_slv, S_IRUGO, show_firmware_bin_slv, NULL);
-static DEVICE_ATTR(fw_bin_detail, S_IRUGO, show_firmware_bin_detail, NULL);
 static DEVICE_ATTR(debug_mode, S_IWUSR|S_IRUGO, show_debug_mode, store_debug_mode);
 static DEVICE_ATTR(debug_log, S_IWUSR|S_IRUGO, NULL, store_debug_log);
 #ifdef ENABLE_NOISE_TEST_MODE
@@ -1446,8 +1337,6 @@ static DEVICE_ATTR(set_delta4, S_IRUGO, set_intensity4_mode_show, NULL);
 static struct attribute *sec_touch_attributes[] = {
 	&dev_attr_fw_dev.attr,
 	&dev_attr_fw_bin.attr,
-	&dev_attr_fw_bin_slv.attr,
-	&dev_attr_fw_bin_detail.attr,
 	&dev_attr_debug_mode.attr,
 	&dev_attr_debug_log.attr,
 #ifndef ENABLE_NOISE_TEST_MODE
@@ -1539,7 +1428,6 @@ static int melfas_ts_probe(struct i2c_client *client, const struct i2c_device_id
 	ts->callbacks.inform_charger = inform_charger_connection;
 	if (ts->pdata->register_cb)
 		ts->pdata->register_cb(&ts->callbacks);
-	ts->tsp_status = true;
 
 #ifdef SET_DOWNLOAD_BY_GPIO
 	ts->gpio_scl = ts->pdata->gpio_scl;
@@ -1632,9 +1520,15 @@ static int melfas_ts_probe(struct i2c_client *client, const struct i2c_device_id
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->pdata->max_y, 0, 0);
 #endif
 	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, ts->pdata->max_pressure, 0, 0);
+#if defined(CONFIG_ICS)
 	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, ts->pdata->max_width, 0, 0);
+#endif
 	input_set_abs_params(input, ABS_MT_TRACKING_ID, 0, P5_MAX_TOUCH-1, 0, 0);
-
+#if !defined(CONFIG_ICS)
+	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, ts->pdata->max_width, 0, 0);
+#else
+	input_set_abs_params(input, ABS_MT_PRESSURE, 0, ts->pdata->max_pressure, 0, 0);
+#endif
 	ret = input_register_device(input);
 	if (ret) {
 		pr_err("[TSP] %s: failed to register input device\n", __func__);
@@ -1733,7 +1627,6 @@ static int melfas_ts_suspend(struct i2c_client *client, pm_message_t mesg)
 
 	if (ts->power_enable)
 		ts->power_enable(0);
-	ts->tsp_status = false;
 }
 
 #ifdef CONFIG_HAS_EARLYSUSPEND
@@ -1748,17 +1641,21 @@ static int melfas_ts_resume(struct i2c_client *client)
 #endif
 
 	char buf[2];
+	int ret = 0;
 
 	pr_info("[TSP] %s : TA/USB %sconnect\n", __func__,ts->charging_status?"":"dis");
 
 	if (ts->power_enable)
 		ts->power_enable(1);
-	ts->tsp_status = true;
 
 	buf[0] = 0x60;
 	buf[1] = ts->charging_status;
 	msleep(500);
-	melfas_i2c_write(ts->client, (char *)buf, 2);
+	ret = melfas_i2c_write(ts->client, (char *)buf, 2);
+
+	if(ret < 0){
+		pr_err("[TSP] TA condtion i2c write fail :%d \n",ret);
+	}
 
 	enable_irq(ts->client->irq);
 }

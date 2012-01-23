@@ -101,7 +101,15 @@ static struct regulator_consumer_supply tps658621_ldo9_supply[] = {
 	REGULATOR_SUPPLY("avdd_amp", NULL),
 };
 
-#define REGULATOR_INIT(_id, _minmv, _maxmv)				\
+/*
+ * Current TPS6586x is known for having a voltage glitch if current load changes
+ * from low to high in auto PWM/PFM mode for CPU's Vdd line.
+ */
+static struct tps6586x_settings sm_config = {
+	.sm_pwm_mode = PWM_ONLY,
+};
+
+#define REGULATOR_INIT(_id, _minmv, _maxmv, onoff, config)				\
 	{								\
 		.constraints = {					\
 			.min_uV = (_minmv)*1000,			\
@@ -111,10 +119,11 @@ static struct regulator_consumer_supply tps658621_ldo9_supply[] = {
 			.valid_ops_mask = (REGULATOR_CHANGE_MODE |	\
 					   REGULATOR_CHANGE_STATUS |	\
 					   REGULATOR_CHANGE_VOLTAGE),	\
-			.always_on = 1,					\
+			.always_on = onoff,					\
 		},							\
 		.num_consumer_supplies = ARRAY_SIZE(tps658621_##_id##_supply),\
 		.consumer_supplies = tps658621_##_id##_supply,		\
+		.driver_data = config,					\
 	}
 
 /*
@@ -145,17 +154,17 @@ static struct regulator_consumer_supply tps658621_ldo9_supply[] = {
  * These should be reviewed and made dynamically controllable
  * by drivers if possible to save power.
  */
-static struct regulator_init_data sm0_data  = REGULATOR_INIT( sm0,  725, 1500);
-static struct regulator_init_data sm1_data  = REGULATOR_INIT( sm1,  725, 1500);
-static struct regulator_init_data sm2_data  = REGULATOR_INIT( sm2, 1800, 1800);
-static struct regulator_init_data ldo1_data = REGULATOR_INIT(ldo1, 1100, 1100);
-static struct regulator_init_data ldo2_data = REGULATOR_INIT(ldo2,  725, 1500);
-static struct regulator_init_data ldo3_data = REGULATOR_INIT(ldo3, 3300, 3300);
-static struct regulator_init_data ldo9_data = REGULATOR_INIT(ldo9, 2850, 2850);
+static struct regulator_init_data sm0_data  = REGULATOR_INIT( sm0,  725, 1500, ON, &sm_config);
+static struct regulator_init_data sm1_data  = REGULATOR_INIT( sm1,  725, 1500, ON, &sm_config);
+static struct regulator_init_data sm2_data  = REGULATOR_INIT( sm2, 1800, 1800, ON, NULL);
+static struct regulator_init_data ldo1_data = REGULATOR_INIT(ldo1, 1100, 1100, ON, NULL);
+static struct regulator_init_data ldo2_data = REGULATOR_INIT(ldo2,  725, 1500, ON, NULL);
+static struct regulator_init_data ldo3_data = REGULATOR_INIT(ldo3, 3300, 3300, ON, NULL);
+static struct regulator_init_data ldo4_data = REGULATOR_INIT(ldo4, 1800, 1800, ON, NULL);
+static struct regulator_init_data ldo9_data = REGULATOR_INIT(ldo9, 2850, 2850, ON, NULL);
 
 /* Regulators that are not enabled by the bootloader */
 static struct regulator_init_data ldo0_data = REGULATOR_SET (ldo0, 3300, OFF);
-static struct regulator_init_data ldo4_data = REGULATOR_SET (ldo4, 1800, OFF);
 static struct regulator_init_data ldo5_data = REGULATOR_SET (ldo5, 3300, OFF);
 static struct regulator_init_data ldo7_data = REGULATOR_SET (ldo7, 3300, OFF);
 static struct regulator_init_data ldo8_data = REGULATOR_SET (ldo8, 2850, OFF);
@@ -311,7 +320,10 @@ int __init p3_regulator_init(void)
 		p3_suspend_data.wake_enb |= TEGRA_WAKE_GPIO_PU5;	/* GPIO_GPIO_INT */
 		p3_suspend_data.wake_low |= TEGRA_WAKE_GPIO_PU5;	/* GPIO_GPIO_INT */
 	}
-
+#ifdef CONFIG_MACH_SAMSUNG_P5
+	p3_suspend_data.wake_enb |= TEGRA_WAKE_GPIO_PS0;
+	p3_suspend_data.wake_any |= TEGRA_WAKE_GPIO_PS0;
+#endif
 	tegra_init_suspend(&p3_suspend_data);
 	return 0;
 }

@@ -10,20 +10,24 @@
 #ifndef __MELFAS_FIRMWARE_DOWNLOAD_H__
 #define __MELFAS_FIRMWARE_DOWNLOAD_H__
 
+//#define FW_FROM_FILE
+
+#ifdef FW_FROM_FILE
 #include <asm/io.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
 #include <linux/uaccess.h>
 #define MELFAS_FW1 "/sdcard/Master.bin"
+#endif
 
 #define MELFAS_BASE_FW_VER	0x40
 #define ILJIN_BASE_FW_VER	0x57
 
-#define MELFAS_FW_VER	0x43
-#define ILJIN_FW_VER	0x60
-#define CORE_FW_VER		0x08
-#define PRIVATE_FW_VER	0x16
-#define PUBLIC_FW_VER	0x11
+#define MELFAS_FW_VER	0x40
+#define ILJIN_FW_VER	0x57
+#define CORE_FW_VER		0x04
+#define PRIVATE_FW_VER	0x04
+#define PUBLIC_FW_VER	0x04
 
 //=====================================================================
 //
@@ -34,12 +38,12 @@
 #define MELFAS_TRANSFER_LENGTH					(32/8)		// Fixed value
 #define MELFAS_FIRMWARE_MAX_SIZE				(32*1024)
 
-#define MELFAS_2CHIP_DOWNLOAD_ENABLE                	1       // 0 : 1Chip Download, 1: 2Chip Download
+#define MELFAS_2CHIP_DOWNLOAD_ENABLE                	0       // 0 : 1Chip Download, 1: 2Chip Download
 // ISC download mode
-#define MELFAS_ISC_2CHIP_DOWNLOAD_ENABLE            	1       // 0 : 1Chip Download, 1: 2Chip Download
-#define MELFAS_CORE_FIRWMARE_UPDATE_ENABLE          	1      	// 0 : disable, 1: enable
-#define MELFAS_PRIVATE_CONFIGURATION_UPDATE_ENABLE   	1       // 0 : disable, 1: enable
-#define MELFAS_PUBLIC_CONFIGURATION_UPDATE_ENABLE    	1       // 0 : disable, 1: enable
+#define MELFAS_ISC_2CHIP_DOWNLOAD_ENABLE            	0       // 0 : 1Chip Download, 1: 2Chip Download
+#define MELFAS_CORE_FIRWMARE_UPDATE_ENABLE          	0      	// 0 : disable, 1: enable
+#define MELFAS_PRIVATE_CONFIGURATION_UPDATE_ENABLE   	0       // 0 : disable, 1: enable
+#define MELFAS_PUBLIC_CONFIGURATION_UPDATE_ENABLE    	0       // 0 : disable, 1: enable
 
 //----------------------------------------------------
 //   ISP Mode
@@ -163,7 +167,7 @@ void mcsdl_vdd_off(void);
 int mcsdl_download_binary_data(bool);			// with binary type .c   file.
 int mcsdl_download_binary_file(void);			// with binary type .bin file.
 
-int mms100_ISC_download_binary_data(bool, INT8);
+int mms100_ISC_download_binary_data(bool);
 int mms100_ISC_download_binary_file(void);
 
 //---------------------------------
