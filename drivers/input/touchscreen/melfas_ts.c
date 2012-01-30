@@ -45,29 +45,6 @@
 #define TSP_FACTORY_TEST
 #define ENABLE_NOISE_TEST_MODE
 
-#if !defined(CONFIG_ICS)
-#define REPORT_MT(touch_number, x, y, amplitude) \
-do {     \
-	input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, touch_number);\
-	input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);             \
-	input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);             \
-	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, amplitude);         \
-	input_report_abs(ts->input_dev, ABS_MT_WIDTH_MAJOR, amplitude); \
-	input_mt_sync(ts->input_dev);                                      \
-} while (0)
-#else
-#define REPORT_MT(touch_number, x, y, amplitude, key) \
-do {     \
-	input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, touch_number);\
-	input_report_abs(ts->input_dev, ABS_MT_POSITION_X, x);             \
-	input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, y);             \
-	input_report_abs(ts->input_dev, ABS_MT_TOUCH_MAJOR, amplitude);         \
-	input_report_abs(ts->input_dev, ABS_MT_PRESSURE, amplitude); \
-	input_report_key(ts->input_dev, BTN_TOUCH, key); \
-	input_mt_sync(ts->input_dev);                                       \
- } while (0)
-#endif
-
 #ifdef SET_DOWNLOAD_BY_GPIO
 #include "mcs8000_download.h"
 #endif
@@ -632,28 +609,17 @@ static void release_all_fingers(struct melfas_ts_data *ts)
 {
 	int i;
 	for(i=0; i<P5_MAX_TOUCH; i++) {
-		if(-1 == g_Mtouch_info[i].strength) {
-			g_Mtouch_info[i].posX = 0;
-			g_Mtouch_info[i].posY = 0;
+		if(-1 == g_Mtouch_info[i].strength)
 			continue;
-		}
 
-		g_Mtouch_info[i].strength = 0;
+		input_mt_slot(ts->input_dev, i);
+		input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, -1);
 
-		REPORT_MT(i,
-				g_Mtouch_info[i].posX, g_Mtouch_info[i].posY,
-#if !defined(CONFIG_ICS)
-				g_Mtouch_info[i].strength);
-#else
-				g_Mtouch_info[i].strength, g_Mtouch_info[i].strength ? 1 : 0);
-#endif
-
-		g_Mtouch_info[i].posX = 0;
-		g_Mtouch_info[i].posY = 0;
-
-		if(0 == g_Mtouch_info[i].strength)
-			g_Mtouch_info[i].strength = -1;
+		g_Mtouch_info[i].posX = -1;
+		g_Mtouch_info[i].posY = -1;
+		g_Mtouch_info[i].strength = -1;
 	}
+	input_sync(ts->input_dev);
 }
 
 static int read_input_info(struct melfas_ts_data *ts, u8 *val)
@@ -847,7 +813,7 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 		posX = ((buf[1]& 0x0F) << 8) | buf[2];
 		posY = ((buf[1]& 0xF0) << 4) | buf[3];
 #endif
-		keyID = strength = buf[4];
+		strength = (buf[4]+1)/2;
 
 		if(reportID == 0x0f ) { // ESD Detection
 			pr_info("[TSP] MELFAS_ESD Detection");
@@ -879,53 +845,33 @@ static void melfas_ts_read_input(struct melfas_ts_data *ts)
 		}
 
 		if(touchType == TOUCH_SCREEN) {
-			g_Mtouch_info[touchID].posX= posX;
-			g_Mtouch_info[touchID].posY= posY;
-
 			if(touchState) {
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-				if (0 >= g_Mtouch_info[touchID].strength)
-					pr_info("[TSP] Press    - ID : %d  [%d,%d] WIDTH : %d",
-						touchID,
-						g_Mtouch_info[touchID].posX,
-						g_Mtouch_info[touchID].posY,
-						strength);
-#endif
-				g_Mtouch_info[touchID].strength= strength/2;
+				if ( (g_Mtouch_info[touchID].posX != posX) || (g_Mtouch_info[touchID].posY != posY) || (g_Mtouch_info[touchID].strength != strength)) {
+					input_mt_slot(ts->input_dev, touchID);
+					input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, touchID);
+					if (g_Mtouch_info[touchID].posX != posX) {
+						input_report_abs(ts->input_dev, ABS_MT_POSITION_X, posX);
+						g_Mtouch_info[touchID].posX = posX;
+					}
+					if (g_Mtouch_info[touchID].posY != posY) {
+						input_report_abs(ts->input_dev, ABS_MT_POSITION_Y, posY);
+						g_Mtouch_info[touchID].posY = posY;
+					}
+					if (g_Mtouch_info[touchID].strength != strength) {
+						input_report_abs(ts->input_dev, ABS_MT_PRESSURE, strength);
+						g_Mtouch_info[touchID].strength = strength;
+					}
+					input_sync(ts->input_dev);
+				}
 			} else {
-#ifdef CONFIG_KERNEL_DEBUG_SEC
-				if (g_Mtouch_info[touchID].strength)
-					pr_info("[TSP] Release - ID : %d [%d,%d]",
-						touchID,
-						g_Mtouch_info[touchID].posX,
-						g_Mtouch_info[touchID].posY);
-#endif
-				g_Mtouch_info[touchID].strength = 0;
-			}
-
-			for(i=0; i<P5_MAX_TOUCH; i++) {
-				if(g_Mtouch_info[i].strength== -1)
-					continue;
-
-				REPORT_MT(i,
-						g_Mtouch_info[i].posX, g_Mtouch_info[i].posY,
-#if !defined(CONFIG_ICS)
-						g_Mtouch_info[i].strength);
-#else
-						g_Mtouch_info[i].strength,
-						g_Mtouch_info[i].strength ? 1 : 0);
-#endif
-
-				if (debug_print)
-					pr_info("[TSP] Touch ID: %d, State : %d, x: %d, y: %d, z: %d\n",
-						i, touchState, g_Mtouch_info[i].posX,
-						g_Mtouch_info[i].posY, g_Mtouch_info[i].strength);
-
-				if(g_Mtouch_info[i].strength == 0)
-					g_Mtouch_info[i].strength = -1;
+				input_mt_slot(ts->input_dev, touchID);
+				input_report_abs(ts->input_dev, ABS_MT_TRACKING_ID, -1);
+				g_Mtouch_info[touchID].posX = -1;
+				g_Mtouch_info[touchID].posY = -1;
+				g_Mtouch_info[touchID].strength = -1;
+				input_sync(ts->input_dev);
 			}
 		}
-		input_sync(ts->input_dev);
 	}
 }
 
@@ -1508,9 +1454,12 @@ static int melfas_ts_probe(struct i2c_client *client, const struct i2c_device_id
 #endif
 
 	set_bit(EV_ABS,  input->evbit);
-	set_bit(EV_SYN, input->evbit);
-	set_bit(EV_KEY, input->evbit);
-	set_bit(BTN_TOUCH, input->keybit);
+	set_bit(ABS_MT_POSITION_X, input->absbit);
+	set_bit(ABS_MT_POSITION_Y, input->absbit);
+	set_bit(ABS_MT_PRESSURE, input->absbit);
+	set_bit(ABS_MT_TRACKING_ID, input->absbit);
+
+	input_mt_create_slots(ts->input_dev, P5_MAX_TOUCH);
 
 #if defined(COOD_ROTATE_90) || defined(COOD_ROTATE_270)
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->pdata->max_y, 0, 0);
@@ -1519,16 +1468,8 @@ static int melfas_ts_probe(struct i2c_client *client, const struct i2c_device_id
 	input_set_abs_params(input, ABS_MT_POSITION_X, 0, ts->pdata->max_x, 0, 0);
 	input_set_abs_params(input, ABS_MT_POSITION_Y, 0, ts->pdata->max_y, 0, 0);
 #endif
-	input_set_abs_params(input, ABS_MT_TOUCH_MAJOR, 0, ts->pdata->max_pressure, 0, 0);
-#if defined(CONFIG_ICS)
-	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, ts->pdata->max_width, 0, 0);
-#endif
-	input_set_abs_params(input, ABS_MT_TRACKING_ID, 0, P5_MAX_TOUCH-1, 0, 0);
-#if !defined(CONFIG_ICS)
-	input_set_abs_params(input, ABS_MT_WIDTH_MAJOR, 0, ts->pdata->max_width, 0, 0);
-#else
 	input_set_abs_params(input, ABS_MT_PRESSURE, 0, ts->pdata->max_pressure, 0, 0);
-#endif
+	input_set_abs_params(input, ABS_MT_TRACKING_ID, 0, P5_MAX_TOUCH-1, 0, 0);
 	ret = input_register_device(input);
 	if (ret) {
 		pr_err("[TSP] %s: failed to register input device\n", __func__);
@@ -1549,8 +1490,11 @@ static int melfas_ts_probe(struct i2c_client *client, const struct i2c_device_id
 		}
 	}
 
-	for (i = 0; i < P5_MAX_TOUCH ; i++)  /* _SUPPORT_MULTITOUCH_ */
+	for (i = 0; i < P5_MAX_TOUCH ; i++) { /* _SUPPORT_MULTITOUCH_ */
+		g_Mtouch_info[i].posX = -1;
+		g_Mtouch_info[i].posY = -1;
 		g_Mtouch_info[i].strength = -1;
+	}
 
 #ifdef CONFIG_SAMSUNG_INPUT
 	tsp_dev  = device_create(sec_class, NULL, 0, ts, "sec_touch");
